@@ -1,0 +1,344 @@
+theory Zigbee
+begin
+
+builtins: symmetric-encryption, hashing
+functions: inc/1
+/*
+In this part (3 rules) of the model, we will model the key generation.
+Here , we have shown 3 key generations e.g. Network key, Trust center link key and pre configured link key generation.
+The structure of the kley generation is a ranodm number is generated in the premise and it is associated with proper agent (coordinator, device ) in the colclusion
+*/
+rule C_network_key_generation:
+  [ Fr(~nk) ]
+  --[ SecretNK(~nk) ]->
+  [ !NwkKey($C,~nk) ]
+
+rule C_new_link_key_generation:
+  [ Fr(~ntlk) ]
+  --[ SecretNTLK(~ntlk) ]->
+  [ !NTLK($C,$D,~ntlk) ]
+
+rule D_pck_generation:
+  [ Fr(~pck) ]
+  --[ SecretPCK(~pck) ]->
+  [ !PCK($D,$C,~pck) ]
+
+
+rule D_lk_generation:
+  [ Fr(~lk) ]
+  --[ SecretLK(~lk) ]->
+  [ !LK($D1,$D2,~lk) ]
+
+rule Reveal_nk:
+  [ !NwkKey(C,~nk) ] --[ RevNK(C)    ]-> [ Out(~nk) ]
+
+rule Reveal_ntlk:
+  [ !NTLK(C,D,~ntlk) ] --[ RevNTLK(C,D)    ]-> [ Out(~ntlk) ]
+
+
+rule Reveal_pck:
+  [ !PCK(D,C,~pck) ] --[ RevPCK(D,C)    ]-> [ Out(~pck) ]
+
+
+/*rule Frame_Counter:
+  [ Counter(D,val) ]
+  --[ NewValue(D,h(val)) ]->
+  [ Counter(D,h(val)), Out(h(val)) ]
+*/
+
+/*
+In this part ( 2 rules ) of the model, we have created a secured channel.
+This channel will be used to transmit the pre configured link key (PCK) so that the the adversary will not know it.
+This channel is actually used to mimic the installation key share via any out of bound method between the coordinator and device.
+
+
+
+*/
+
+
+
+
+
+rule ChanOut_S:
+        [ Out_S($A,$B,x) ]
+      --[ ChanOut_S($A,$B,x) ]->
+        [ !Sec($A,$B,x) ]
+
+rule ChanIn_S:
+        [ !Sec($A,$B,x) ]
+      --[ ChanIn_S($A,$B,x) ]->
+        [ In_S($A,$B,x) ]
+
+
+/*
+This part is for modeling the network key sharing.
+There will be 2 agents. Coordinator(C) and Device(D). The message sequence will be :
+
+D --> C [Beacon Request]
+D <-- C [Beacon]
+D --> C [Association Request]
+D <-- C [Network Key Send]
+
+But, as we are trying to model both Zigbee version 1 and 3, so depending on version, it will go on different branches creating different rules.
+*/
+
+rule D1_Beacon_req:
+  [ !PCK($D,$C,~pck) ]
+  --[ Beacon_req() ]->
+  [ Out(<$D,'0x07'>), BeaconReq($D), !ZigbeeV3(), !ZigbeeV1() ]
+
+rule C1_Beacon:
+  [ In(<D,'0x07'>), !NwkKey(C,~nk) ]
+  --[ Send_Beacon(C,D,'0x07') ]->
+  [ Out(<C,D,'panID'>), Beacon('panID') ] 
+
+rule D2_3_association_req:
+  [ In(<C,D,'panID'>),  BeaconReq(D), !PCK(D,C,~pck), !ZigbeeV3() ] 
+  --[ Send_Association_Req(D,C) ]->
+  [  Association_req(D,C), Out_S(D,C,~pck) ]
+
+rule D2_1_association_req:
+  [ In(<C,D,'panID'>),  BeaconReq(D), !PCK(D,C,~pck), !ZigbeeV1() ]
+  --[ Send_Association_Req(D,C) ]->
+  [  Association_req(D,C), Out(<D,'pck'>) ]
+
+rule C2_3_Send_Nwk_key: 
+  [ In_S(D,C,~pck), !NwkKey(C,~nk), Beacon('panID'), !PCK(D,C,~pck), !ZigbeeV3() ]
+  --[ Send_Network_Key(C,D,~nk)]->
+  [ Out(<D,C,senc(<C,D,~nk>,~pck)>), NwkKeySent(C,D,~nk), !PCKShared(D,C,~pck)]
+
+
+rule C2_1_Send_Nwk_key:
+  let 
+	pck = 'pck'
+  in
+  [ In(<D,pck>), !NwkKey(C,nk), Beacon('panID'), !ZigbeeV1() ]
+  --[ Send_Network_Key(C,D,nk)]->
+  [ Out(<D,C,senc(nk,pck)>), NwkKeySent(C,D,nk), !PCKShared(D,C,pck) ]
+
+/*
+
+In Zigbee 3.0, the pre-configured link key is replaced by a new trust center link key. So, in this part we will model the new trust center
+link key (NTLK) generation and sharing.
+
+The message sequence will be:
+
+D --> C [New Trust Center Link Key(NTLK) request]
+D <-- C [ NTLK Send]
+D --> C [NTLK Verify Request]
+D <-- C [NTLK Verified]
+
+*/
+
+
+/*
+rule D3_NTLK_req:
+  [ In(<D,C,senc(<C,D,~nk>,~pck)>), Association_req(D,C),!PCK($D,$C,~pck)]
+  --[ NwkKeyRecv(D,C,~nk) ]->
+  [ ]
+*/
+rule D3_NTLK_req:
+  [ In(<D,C,senc(<C,D,~nk>,~pck)>), Association_req(D,C), !PCK(D,C,~pck), !ZigbeeV3()]
+  --[ NwkKeyRecv(D,C,~nk) ]->
+  [ NTLK_req(D,C) ]
+
+
+
+/*
+rule D3a_NTLK:
+  [ Authenticated() ]
+  --[]->
+  [ NTLK_req() ]
+*/
+
+
+rule C3_NTLK_send:
+  [ !NTLK(C,D,ntlk), NwkKeySent(C,D,nk), !PCK(D,C,~pck) ]
+  --[ SendNTLK(C,D,ntlk) ]->
+  [ Out(senc(ntlk,~pck)), NTLKSent(C,D,ntlk) ]
+
+rule D4_NTLK_verify:
+  [ In(senc(ntlk, ~pck)), NTLK_req(D,C), !PCK(D,C,~pck) ]
+  --[NTLK_Verifiy_Req(D,C,ntlk)]->
+  [ Out(senc(sdec(ntlk,~pck),(sdec(ntlk,~pck)))) ]
+
+rule C4_NTLK_verified:
+  [ In(senc(sdec(ntlk,pck),(sdec(ntlk,pck)))), NTLKSent(C,D,ntlk) ]  
+  --[NTLK_verified(ntlk)]->
+  [ Counter(D,'0'), !SendMsg(D,C) ]
+
+
+/*
+This part is for the network update.
+Whenever the device receive any message, the frame counter value will be increased by 1.
+As, we don't find anything to increase the value of a variable in Tamarin, we used has function instead.
+Here, we assumed, h(x) = x+1
+
+And, when the frame counter reaches a certain number, the network key will update, a new network key will be generated and sent to the devices.
+The frame counter will also become 0 again
+
+*/
+
+rule Frame_counter_increase:
+  [ !SendMsg(D,C), Counter( D, val) ]
+  --[Msg_Send()]->
+  [ Counter(D,inc(val)), Out (inc(val)) ] 
+
+rule Network_update:
+//let
+//  x = '100'  
+//in
+[ Counter (D, x) ]
+  --[]->
+  [Network_Update(), Counter(D, '0') ]
+
+
+rule Network_update_demo:
+  [ Counter (D, inc(val)) ]
+ --[]->
+  [Network_Update(), Counter(D, val) ]
+
+
+
+rule Network_key_resend:
+  [ Network_Update(), Fr(~nnk), !NTLK(C,D,ntlk) ]
+  --[Update_network()]->
+  [ Out(senc(~nnk,ntlk)), Network_key_resend(D) ]
+
+
+/*
+This part indicates the link key generation between two devices.
+When 2 device wants to establish a link key betwwen them and send request to coordinator, the coordinator generates a link key.
+It sends the link key to the devices encrypting it with their trust center link keys.
+*/
+
+
+rule A1_Link_key_request:
+  []
+  --[]->
+  [ Out(<'0x02',$A1,$A2>), Link_key_req($A1,$A2) ]
+
+/*
+rule A2_Link_key_request:
+   []
+   --[]->
+   [ Out(<$A2,$A1>), Link_key_req($A2,$A1) ]
+*/
+
+rule C13_link_key:
+  [ In(<'0x02',A1,A2>), !LK(A1,A2,~lk), !NTLK(A1,D,ntlk1), !NTLK(A2,D,ntlk2), !ZigbeeV3() ]
+  --[]->
+  [ Out(<A1,A2,senc(~lk,ntlk1)>), Out(<A2,A1,senc(~lk,ntlk2)>) ]
+
+
+rule C11_link_key:
+  [ In(<'0x02',A1,A2>), !LK(A1,A2,~lk), !ZigbeeV1() ] 
+  --[]->
+  [ Out(<A1,A2,senc(~lk,'pck')>), Out(<A2,A1,senc(~lk,'pck')>) ]
+
+
+
+rule A1_Link_key_received:
+  [In(<A1,A2,senc(lk,ntlk1)>)]
+  --[]->
+  []
+
+rule A2_link_key_recieved:
+  [ In(<A2,A1,senc(lk,ntlk2)>) ]
+  --[]->
+  []
+
+// ------------------------------
+
+
+lemma execute:
+  exists-trace 
+    "(Ex #i. Beacon_req() @ #i) ==> (Ex y #j. NTLK_verified(y) @ #j)"
+
+lemma execute_network_update:
+  exists-trace
+    "(Ex #i. Beacon_req() @ #i) ==> (Ex #j. Update_network() @ #j)"
+
+lemma secrecy_NK:
+  "All x #i.
+      SecretNK(x) @ i ==> (not(Ex #j. K(x) @j))
+	 | (Ex C #r. RevNK(C) @ r)
+	 | (Ex C D #r. RevPCK(D,C) @ r)
+	 | (Ex C D #r. RevNTLK(C,D) @ r)"
+
+lemma secrecy_NTLK:
+ "All x #i.
+      SecretNTLK(x) @ i ==> (not(Ex #j. K(x) @j))
+	  | (Ex C #r. RevNK(C) @ r)
+          | (Ex C D #r. RevPCK(D,C) @ r)
+          | (Ex C D #r. RevNTLK(C,D) @ r)"
+
+
+lemma secrecy_PCK:
+ "All x #i.
+      SecretPCK(x) @ i ==> (not(Ex #j. K(x) @j))
+	  | (Ex C #r. RevNK(C) @ r)
+          | (Ex C D #r. RevPCK(D,C) @ r)
+          | (Ex C D #r. RevNTLK(C,D) @ r)"
+
+lemma secrecy_LK:
+ "All x #i.
+	SecretLK(x) @ i ==>(not(Ex #j. K(x) @j))
+	  | (Ex C #r. RevNK(C) @ r)
+          | (Ex C D #r. RevPCK(D,C) @ r)
+          | (Ex C D #r. RevNTLK(C,D) @ r)"
+
+lemma key_agreement:
+ "All nk1 nk2 coordinator device #i #j.
+	Send_Network_Key(nk1,coordinator,device) @ i
+	& Send_Network_Key(nk2,coordinator,device) @ j
+	  ==>
+	   nk1 = nk2"
+
+
+lemma uniquesness_of_key:
+ "All key coordinator device #i #j.
+         Send_Network_Key(key,coordinator,device) @ i
+         & Send_Network_Key(key,coordinator,device) @ j
+           ==>
+            #i = #j"
+
+
+lemma weak_agreement:
+  " All c d x1 #i.
+	NwkKeyRecv(d,c,x1) @ #i
+	==>
+	 ((Ex x2 #j. Send_Network_Key(c,d,x2) @ #j)
+	
+	|(Ex #r. RevNK(c) @ r)
+        | (Ex #r. RevPCK(d,c)  @ r))
+    "
+
+
+
+
+lemma non_injective_agreement:
+  " All c d x #i.
+	NwkKeyRecv(d,c,x) @ #i
+	==>
+	 ((Ex #j. Send_Network_Key(c,d,x) @ #j)
+	
+	|(Ex #r. RevNK(c) @ r)
+        | (Ex #r. RevPCK(d,c)  @ r))
+    "
+
+
+lemma injective_agreement:
+  " All c d x #i.
+	NwkKeyRecv(d,c,x) @ #i
+	==>
+	 (Ex #j. Send_Network_Key(c,d,x) @ #j
+	&  j < i)
+	|(Ex #r. RevNK(c) @ r)
+        | (Ex #r. RevPCK(d,c)  @ r)
+    "
+
+
+end
+
+
